@@ -12,10 +12,6 @@ from aiogram.types import Message
 TOKEN = os.getenv("BOT_TOKEN")
 GOOGLE_CREDENTIALS_RAW = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
-print("TOKEN_START")
-print(repr(TOKEN))
-print("TOKEN_END")
-
 SPREADSHEET_ID = "19psuYsJk6s6Si-9vh7LaAvHp5LdmpiQvHFJVHiCwmnc"
 SHEET_NAME = "Sales-Bot"
 
@@ -36,10 +32,18 @@ creds = Credentials.from_service_account_info(
 client = gspread.authorize(creds)
 sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-# ===== HANDLER =====
+# ===== HANDLERS =====
 @dp.message(Command("start"))
 async def start_handler(message: Message):
     await message.answer("Бот работает")
+
+@dp.message(Command("test"))
+async def test_handler(message: Message):
+    try:
+        data = sheet.get_all_values()
+        await message.answer(f"Строк в таблице: {len(data)}")
+    except Exception as e:
+        await message.answer(f"Ошибка: {str(e)}")
 
 # ===== START =====
 async def main():
