@@ -88,7 +88,17 @@ def format_amount(n):
     return f"{n:,}".replace(",", " ")
 
 def parse_amount(x):
-    return int(str(x).replace(" ", "").replace(",", "").replace("₸", "") or 0)
+    try:
+        return int(
+            str(x)
+            .replace(" ", "")
+            .replace("\xa0", "")
+            .replace(",", "")
+            .replace("₸", "")
+            .strip()
+        )
+    except:
+        return 0
 
 def parse_date(x):
     try:
