@@ -18,11 +18,16 @@ from aiogram.types import Message
 TOKEN = os.getenv("BOT_TOKEN")
 GOOGLE_CREDENTIALS_RAW = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
+if not TOKEN:
+    raise ValueError("Не найден BOT_TOKEN в переменных окружения")
+
+if not GOOGLE_CREDENTIALS_RAW:
+    raise ValueError("Не найден GOOGLE_CREDENTIALS_JSON в переменных окружения")
+
 # =========================
 # CONFIG
 # =========================
 TIMEZONE = "Asia/Almaty"
-
 CACHE_TTL = 60  # секунд
 
 SALES_BOT_SPREADSHEET_ID = "19psuYsJk6s6Si-9vh7LaAvHp5LdmpiQvHFJVHiCwmnc"
@@ -32,24 +37,27 @@ TODAY_SOURCES = [
     {
         "project": "Бухонин",
         "spreadsheet_id": "1vR5lHuASxlscEGscv6ka4QBRz73OE6Zbf5kvbgGCQPQ",
-        "date_col_index": 1,
-        "amount_col_index": 6,
+        "date_col_index": 1,   # B = дата
+        "amount_col_index": 6, # G = сумма продажи
     },
     {
         "project": "Шолпан",
         "spreadsheet_id": "1FArSB2jUMY67MlTk7Z2-38Qr8BqGr5jdWjTo1CL73LM",
-        "date_col_index": 1,
-        "amount_col_index": 9,
+        "date_col_index": 1,   # B = дата
+        "amount_col_index": 9, # J = сумма продажи
     },
     {
         "project": "Кайсар",
         "spreadsheet_id": "1YP7Xl6Sju7rAUVbqtQaryqpKbawr5_qJSEvbQTWoK84",
-        "date_col_index": 1,
-        "amount_col_index": 9,
+        "date_col_index": 1,   # B = дата
+        "amount_col_index": 9, # J = сумма продажи
     },
 ]
 
-SKIP_KEYWORDS = ["январ", "феврал", "март", "апрел", "май", "июн", "июл", "август", "сент", "октя", "ноябр", "декабр", "база"]
+SKIP_KEYWORDS = [
+    "январ", "феврал", "март", "апрел", "май", "июн", "июл",
+    "август", "сент", "октя", "ноябр", "декабр", "база", "base"
+]
 
 # =========================
 # CACHE
@@ -59,47 +67,57 @@ cache = {
     "today": {"time": 0, "data": None},
 }
 
-def is_cache_valid(key):
+
+def is_cache_valid(key: str) -> bool:
     return time.time() - cache[key]["time"] < CACHE_TTL
 
-def set_cache(key, data):
+
+def set_cache(key: str, data) -> None:
     cache[key]["time"] = time.time()
     cache[key]["data"] = data
 
-def get_cache(key):
+
+def get_cache(key: str):
     return cache[key]["data"]
+
 
 # =========================
 # GOOGLE
 # =========================
 scope = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-creds = Credentials.from_service_account_info(json.loads(GOOGLE_CREDENTIALS_RAW), scopes=scope)
+creds = Credentials.from_service_account_info(
+    json.loads(GOOGLE_CREDENTIALS_RAW),
+    scopes=scope,
+)
 client = gspread.authorize(creds)
 
 sheet = client.open_by_key(SALES_BOT_SPREADSHEET_ID).worksheet(SALES_BOT_SHEET_NAME)
 
+# =========================
+# BOT
+# =========================
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # =========================
 # HELPERS
 # =========================
-def format_amount(n):
+def format_amount(n: int) -> str:
     return f"{n:,}".replace(",", " ")
 
-def parse_amount(x):
+
+def parse_amount(x) -> int:
     try:
         s = str(x).strip()
 
         if not s:
             return 0
 
-        # убираем валюту и невидимые пробелы
+        # убираем валюту и пробелы
         s = s.replace("₸", "").replace("\xa0", "").replace(" ", "").strip()
 
         # если есть и точка, и запятая
-        # считаем, что последний символ-разделитель — это десятичная часть
-        # а все до него — целая часть
+        # последний разделитель считаем десятичной частью
         if "," in s and "." in s:
             last_comma = s.rfind(",")
             last_dot = s.rfind(".")
@@ -109,7 +127,6 @@ def parse_amount(x):
         # если есть только запятая
         elif "," in s:
             parts = s.split(",")
-            # если после запятой 1-2 цифры, это копейки -> отрезаем
             if len(parts[-1]) <= 2:
                 s = ",".join(parts[:-1]) or parts[0]
             s = s.replace(",", "")
@@ -117,12 +134,11 @@ def parse_amount(x):
         # если есть только точка
         elif "." in s:
             parts = s.split(".")
-            # если после точки 1-2 цифры, это копейки -> отрезаем
             if len(parts[-1]) <= 2:
                 s = ".".join(parts[:-1]) or parts[0]
             s = s.replace(".", "")
 
-        # на всякий случай оставляем только цифры и минус
+        # оставляем только цифры и минус
         cleaned = []
         for ch in s:
             if ch.isdigit() or ch == "-":
@@ -135,28 +151,38 @@ def parse_amount(x):
 
         return int(s)
 
-    except:
+    except Exception:
         return 0
-        return int(
-            str(x)
-            .replace(" ", "")
-            .replace("\xa0", "")
-            .replace(",", "")
-            .replace("₸", "")
-            .strip()
-        )
-    except:
-        return 0
+
 
 def parse_date(x):
-    try:
-        return datetime.strptime(x, "%d.%m.%Y").date()
-    except:
+    text = str(x).strip()
+    if not text:
         return None
 
-def skip_sheet(name):
-    name = name.lower()
+    formats = [
+        "%d.%m.%Y",
+        "%d.%m.%y",
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%d/%m/%y",
+        "%d.%m.%Y %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except Exception:
+            continue
+
+    return None
+
+
+def skip_sheet(name: str) -> bool:
+    name = name.lower().strip()
     return any(k in name for k in SKIP_KEYWORDS)
+
 
 # =========================
 # DATA LOADERS
@@ -166,12 +192,20 @@ def load_top_data():
         return get_cache("top")
 
     data = sheet.get_all_values()[1:]
-
     managers = []
+
     for row in data:
-        name = row[0]
+        if len(row) < 4:
+            continue
+
+        name = row[0].strip()
+        team = row[1].strip()
         amount = parse_amount(row[3])
-        managers.append((name, amount, row[1]))
+
+        if not name:
+            continue
+
+        managers.append((name, amount, team))
 
     managers.sort(key=lambda x: x[1], reverse=True)
 
@@ -193,22 +227,33 @@ def load_today_data():
             if skip_sheet(ws.title):
                 continue
 
-            values = ws.get_all_values()[2:]
+            values = ws.get_all_values()
 
-            for row in values:
-                if len(row) <= src["amount_col_index"]:
+            # 1 строка: итоги
+            # 2 строка: заголовки
+            # с 3 строки: данные
+            if len(values) < 3:
+                continue
+
+            rows = values[2:]
+
+            for row in rows:
+                if len(row) <= max(src["date_col_index"], src["amount_col_index"]):
                     continue
 
-                d = parse_date(row[src["date_col_index"]])
-                if d != today:
+                sale_date = parse_date(row[src["date_col_index"]])
+                if sale_date != today:
                     continue
 
                 amount = parse_amount(row[src["amount_col_index"]])
-                if amount > 0:
-                    result.append((ws.title, src["project"], amount))
+                if amount <= 0:
+                    continue
+
+                result.append((ws.title.strip(), src["project"], amount))
 
     set_cache("today", result)
     return result
+
 
 # =========================
 # COMMANDS
@@ -229,6 +274,10 @@ async def start(message: Message):
 async def top5(message: Message):
     data = load_top_data()
 
+    if not data:
+        await message.answer("Нет данных.")
+        return
+
     text = "Топ 5:\n\n"
     for i, (name, amount, _) in enumerate(data[:5], 1):
         text += f"{i}. {name} — {format_amount(amount)}\n"
@@ -240,6 +289,10 @@ async def top5(message: Message):
 async def topall(message: Message):
     data = load_top_data()
 
+    if not data:
+        await message.answer("Нет данных.")
+        return
+
     text = "Все:\n\n"
     for i, (name, amount, _) in enumerate(data, 1):
         text += f"{i}. {name} — {format_amount(amount)}\n"
@@ -250,6 +303,10 @@ async def topall(message: Message):
 @dp.message(Command("topteam"))
 async def topteam(message: Message):
     data = load_top_data()
+
+    if not data:
+        await message.answer("Нет данных.")
+        return
 
     teams = {}
     for _, amount, team in data:
@@ -272,11 +329,11 @@ async def today(message: Message):
         await message.answer("Сегодня оплат нет")
         return
 
-    res = {}
+    grouped = {}
     for name, project, amount in data:
-        res[(name, project)] = res.get((name, project), 0) + amount
+        grouped[(name, project)] = grouped.get((name, project), 0) + amount
 
-    sorted_data = sorted(res.items(), key=lambda x: x[1], reverse=True)
+    sorted_data = sorted(grouped.items(), key=lambda x: x[1], reverse=True)
 
     text = "Сегодня:\n\n"
     total = 0
