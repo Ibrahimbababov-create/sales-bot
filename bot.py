@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -12,35 +13,21 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 # =========================
-# ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
+# ENV
 # =========================
 TOKEN = os.getenv("BOT_TOKEN")
 GOOGLE_CREDENTIALS_RAW = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
-if not TOKEN:
-    raise ValueError("Не найден BOT_TOKEN в переменных окружения")
-
-if not GOOGLE_CREDENTIALS_RAW:
-    raise ValueError("Не найден GOOGLE_CREDENTIALS_JSON в переменных окружения")
-
 # =========================
-# ОСНОВНАЯ ТАБЛИЦА ДЛЯ СТАРЫХ КОМАНД
-# =========================
-SALES_BOT_SPREADSHEET_ID = "19psuYsJk6s6Si-9vh7LaAvHp5LdmpiQvHFJVHiCwmnc"
-SALES_BOT_SHEET_NAME = "Sales-Bot"
-
-# =========================
-# ЧАСОВОЙ ПОЯС
+# CONFIG
 # =========================
 TIMEZONE = "Asia/Almaty"
 
-# =========================
-# ИСТОЧНИКИ ДЛЯ /today И /todayteam
-# amount_col_index = индекс колонки "Сумма продажи" (0-based)
-# У Бухонина сумма в G => индекс 6
-# У Шолпан и Кайсар сумма в J => индекс 9
-# date_col_index почти везде B => индекс 1
-# =========================
+CACHE_TTL = 60  # секунд
+
+SALES_BOT_SPREADSHEET_ID = "19psuYsJk6s6Si-9vh7LaAvHp5LdmpiQvHFJVHiCwmnc"
+SALES_BOT_SHEET_NAME = "Sales-Bot"
+
 TODAY_SOURCES = [
     {
         "project": "Бухонин",
@@ -62,382 +49,217 @@ TODAY_SOURCES = [
     },
 ]
 
-# =========================
-# КЛЮЧЕВЫЕ СЛОВА ДЛЯ ИГНОРА ЛИСТОВ
-# =========================
-SKIP_SHEET_KEYWORDS = [
-    "январ",
-    "феврал",
-    "март",
-    "апрел",
-    "май",
-    "мая",
-    "июн",
-    "июл",
-    "август",
-    "сент",
-    "октя",
-    "ноябр",
-    "декабр",
-    "база",
-    "base",
-]
+SKIP_KEYWORDS = ["январ", "феврал", "март", "апрел", "май", "июн", "июл", "август", "сент", "октя", "ноябр", "декабр", "база"]
 
 # =========================
-# GOOGLE + BOT
+# CACHE
+# =========================
+cache = {
+    "top": {"time": 0, "data": None},
+    "today": {"time": 0, "data": None},
+}
+
+def is_cache_valid(key):
+    return time.time() - cache[key]["time"] < CACHE_TTL
+
+def set_cache(key, data):
+    cache[key]["time"] = time.time()
+    cache[key]["data"] = data
+
+def get_cache(key):
+    return cache[key]["data"]
+
+# =========================
+# GOOGLE
 # =========================
 scope = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-google_creds = json.loads(GOOGLE_CREDENTIALS_RAW)
-
-creds = Credentials.from_service_account_info(
-    google_creds,
-    scopes=scope
-)
-
+creds = Credentials.from_service_account_info(json.loads(GOOGLE_CREDENTIALS_RAW), scopes=scope)
 client = gspread.authorize(creds)
+
+sheet = client.open_by_key(SALES_BOT_SPREADSHEET_ID).worksheet(SALES_BOT_SHEET_NAME)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-sales_bot_sheet = client.open_by_key(SALES_BOT_SPREADSHEET_ID).worksheet(SALES_BOT_SHEET_NAME)
-
-
 # =========================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# HELPERS
 # =========================
-def format_amount(amount: int) -> str:
-    return f"{amount:,}".replace(",", " ")
+def format_amount(n):
+    return f"{n:,}".replace(",", " ")
 
+def parse_amount(x):
+    return int(str(x).replace(" ", "").replace(",", "").replace("₸", "") or 0)
 
-def parse_amount(value) -> int:
-    """
-    Превращает сумму в число.
-    Убирает пробелы, ₸, запятые, неразрывные пробелы.
-    """
-    if value is None:
-        return 0
-
-    text = str(value)
-    text = text.replace("₸", "")
-    text = text.replace(" ", "")
-    text = text.replace("\xa0", "")
-    text = text.replace(",", "")
-    text = text.strip()
-
-    if not text:
-        return 0
-
+def parse_date(x):
     try:
-        return int(float(text))
-    except Exception:
-        return 0
-
-
-def parse_sheet_date(value):
-    """
-    Пытается распарсить дату из Google Sheets.
-    Ожидаем в основном формат dd.mm.yyyy.
-    """
-    if value is None:
+        return datetime.strptime(x, "%d.%m.%Y").date()
+    except:
         return None
 
-    text = str(value).strip()
-    if not text:
-        return None
+def skip_sheet(name):
+    name = name.lower()
+    return any(k in name for k in SKIP_KEYWORDS)
 
-    date_formats = [
-        "%d.%m.%Y",
-        "%d.%m.%y",
-        "%Y-%m-%d",
-        "%d/%m/%Y",
-        "%d/%m/%y",
-        "%d.%m.%Y %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-    ]
+# =========================
+# DATA LOADERS
+# =========================
+def load_top_data():
+    if is_cache_valid("top"):
+        return get_cache("top")
 
-    for fmt in date_formats:
-        try:
-            return datetime.strptime(text, fmt).date()
-        except Exception:
-            continue
+    data = sheet.get_all_values()[1:]
 
-    return None
+    managers = []
+    for row in data:
+        name = row[0]
+        amount = parse_amount(row[3])
+        managers.append((name, amount, row[1]))
 
+    managers.sort(key=lambda x: x[1], reverse=True)
 
-def should_skip_sheet(sheet_name: str) -> bool:
-    """
-    Игнорируем месячные сводки и базы.
-    Новые менеджеры подхватятся автоматически, если у них будет свой лист.
-    """
-    name = sheet_name.strip().lower()
-
-    for keyword in SKIP_SHEET_KEYWORDS:
-        if keyword in name:
-            return True
-
-    return False
+    set_cache("top", managers)
+    return managers
 
 
-def get_sales_bot_data():
-    """
-    Возвращает все строки из Sales-Bot, кроме заголовка.
-    """
-    data = sales_bot_sheet.get_all_values()
+def load_today_data():
+    if is_cache_valid("today"):
+        return get_cache("today")
 
-    if len(data) <= 1:
-        return []
-
-    return data[1:]
-
-
-def get_today_sales_rows():
-    """
-    Читает все нужные таблицы и собирает продажи за сегодня.
-    Возвращает список словарей:
-    {
-        "project": "...",
-        "manager": "...",
-        "amount": 123000
-    }
-    """
     today = datetime.now(ZoneInfo(TIMEZONE)).date()
     result = []
 
-    for source in TODAY_SOURCES:
-        spreadsheet = client.open_by_key(source["spreadsheet_id"])
-        worksheets = spreadsheet.worksheets()
+    for src in TODAY_SOURCES:
+        ss = client.open_by_key(src["spreadsheet_id"])
 
-        for ws in worksheets:
-            if should_skip_sheet(ws.title):
+        for ws in ss.worksheets():
+            if skip_sheet(ws.title):
                 continue
 
-            values = ws.get_all_values()
+            values = ws.get_all_values()[2:]
 
-            # В листах МОПов:
-            # 1-я строка = итог сверху
-            # 2-я строка = заголовки
-            # 3-я и далее = данные
-            if len(values) < 3:
-                continue
-
-            data_rows = values[2:]
-
-            for row in data_rows:
-                if len(row) <= max(source["date_col_index"], source["amount_col_index"]):
+            for row in values:
+                if len(row) <= src["amount_col_index"]:
                     continue
 
-                sale_date = parse_sheet_date(row[source["date_col_index"]])
-                if sale_date != today:
+                d = parse_date(row[src["date_col_index"]])
+                if d != today:
                     continue
 
-                amount = parse_amount(row[source["amount_col_index"]])
-                if amount <= 0:
-                    continue
+                amount = parse_amount(row[src["amount_col_index"]])
+                if amount > 0:
+                    result.append((ws.title, src["project"], amount))
 
-                result.append(
-                    {
-                        "project": source["project"],
-                        "manager": ws.title.strip(),
-                        "amount": amount,
-                    }
-                )
-
+    set_cache("today", result)
     return result
 
-
 # =========================
-# СТАРЫЕ КОМАНДЫ
+# COMMANDS
 # =========================
 @dp.message(Command("start"))
-async def start_handler(message: Message):
+async def start(message: Message):
     await message.answer(
-        "Бот работает.\n\n"
         "Команды:\n"
-        "/top5 — топ 5 менеджеров\n"
-        "/topall — весь рейтинг менеджеров\n"
-        "/topteam — топ команд\n"
-        "/today — кто сколько занес сегодня\n"
-        "/todayteam — сколько занесли команды сегодня"
+        "/top5\n"
+        "/topall\n"
+        "/topteam\n"
+        "/today\n"
+        "/todayteam"
     )
 
 
 @dp.message(Command("top5"))
-async def top5_handler(message: Message):
-    try:
-        data = get_sales_bot_data()
-        managers = []
+async def top5(message: Message):
+    data = load_top_data()
 
-        for row in data:
-            if len(row) < 4:
-                continue
+    text = "Топ 5:\n\n"
+    for i, (name, amount, _) in enumerate(data[:5], 1):
+        text += f"{i}. {name} — {format_amount(amount)}\n"
 
-            name = row[0].strip()
-            amount = parse_amount(row[3])
-
-            if not name:
-                continue
-
-            managers.append((name, amount))
-
-        managers.sort(key=lambda x: x[1], reverse=True)
-
-        if not managers:
-            await message.answer("Нет данных по менеджерам.")
-            return
-
-        text = "Топ 5 менеджеров:\n\n"
-
-        for i, (name, amount) in enumerate(managers[:5], start=1):
-            text += f"{i}. {name} — {format_amount(amount)}\n"
-
-        await message.answer(text)
-
-    except Exception as e:
-        await message.answer(f"Ошибка в /top5: {str(e)}")
+    await message.answer(text)
 
 
 @dp.message(Command("topall"))
-async def topall_handler(message: Message):
-    try:
-        data = get_sales_bot_data()
-        managers = []
+async def topall(message: Message):
+    data = load_top_data()
 
-        for row in data:
-            if len(row) < 4:
-                continue
+    text = "Все:\n\n"
+    for i, (name, amount, _) in enumerate(data, 1):
+        text += f"{i}. {name} — {format_amount(amount)}\n"
 
-            name = row[0].strip()
-            amount = parse_amount(row[3])
-
-            if not name:
-                continue
-
-            managers.append((name, amount))
-
-        managers.sort(key=lambda x: x[1], reverse=True)
-
-        if not managers:
-            await message.answer("Нет данных по менеджерам.")
-            return
-
-        text = "Общий рейтинг менеджеров:\n\n"
-
-        for i, (name, amount) in enumerate(managers, start=1):
-            text += f"{i}. {name} — {format_amount(amount)}\n"
-
-        await message.answer(text)
-
-    except Exception as e:
-        await message.answer(f"Ошибка в /topall: {str(e)}")
+    await message.answer(text)
 
 
 @dp.message(Command("topteam"))
-async def topteam_handler(message: Message):
-    try:
-        data = get_sales_bot_data()
-        teams = {}
+async def topteam(message: Message):
+    data = load_top_data()
 
-        for row in data:
-            if len(row) < 4:
-                continue
+    teams = {}
+    for _, amount, team in data:
+        teams[team] = teams.get(team, 0) + amount
 
-            team = row[1].strip()
-            amount = parse_amount(row[3])
+    sorted_teams = sorted(teams.items(), key=lambda x: x[1], reverse=True)
 
-            if not team:
-                continue
+    text = "Команды:\n\n"
+    for i, (team, amount) in enumerate(sorted_teams, 1):
+        text += f"{i}. {team} — {format_amount(amount)}\n"
 
-            teams[team] = teams.get(team, 0) + amount
-
-        sorted_teams = sorted(teams.items(), key=lambda x: x[1], reverse=True)
-
-        if not sorted_teams:
-            await message.answer("Нет данных по командам.")
-            return
-
-        text = "Топ команд:\n\n"
-
-        for i, (team, amount) in enumerate(sorted_teams, start=1):
-            text += f"{i}. {team} — {format_amount(amount)}\n"
-
-        await message.answer(text)
-
-    except Exception as e:
-        await message.answer(f"Ошибка в /topteam: {str(e)}")
+    await message.answer(text)
 
 
-# =========================
-# НОВЫЕ КОМАНДЫ
-# =========================
 @dp.message(Command("today"))
-async def today_handler(message: Message):
-    try:
-        sales = get_today_sales_rows()
+async def today(message: Message):
+    data = load_today_data()
 
-        if not sales:
-            today_str = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d.%m.%Y")
-            await message.answer(f"Сегодня ({today_str}) пока оплат нет.")
-            return
+    if not data:
+        await message.answer("Сегодня оплат нет")
+        return
 
-        grouped = {}
+    res = {}
+    for name, project, amount in data:
+        res[(name, project)] = res.get((name, project), 0) + amount
 
-        for item in sales:
-            key = (item["manager"], item["project"])
-            grouped[key] = grouped.get(key, 0) + item["amount"]
+    sorted_data = sorted(res.items(), key=lambda x: x[1], reverse=True)
 
-        sorted_rows = sorted(grouped.items(), key=lambda x: x[1], reverse=True)
+    text = "Сегодня:\n\n"
+    total = 0
 
-        today_str = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d.%m.%Y")
-        total_amount = sum(amount for _, amount in sorted_rows)
+    for i, ((name, project), amount) in enumerate(sorted_data, 1):
+        text += f"{i}. {name} [{project}] — {format_amount(amount)}\n"
+        total += amount
 
-        text = f"Сегодня занесли ({today_str}):\n\n"
+    text += f"\nИтого: {format_amount(total)}"
 
-        for i, ((manager, project), amount) in enumerate(sorted_rows, start=1):
-            text += f"{i}. {manager} [{project}] — {format_amount(amount)}\n"
-
-        text += f"\nИтого за сегодня: {format_amount(total_amount)}"
-
-        await message.answer(text)
-
-    except Exception as e:
-        await message.answer(f"Ошибка в /today: {str(e)}")
+    await message.answer(text)
 
 
 @dp.message(Command("todayteam"))
-async def todayteam_handler(message: Message):
-    try:
-        sales = get_today_sales_rows()
+async def todayteam(message: Message):
+    data = load_today_data()
 
-        if not sales:
-            today_str = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d.%m.%Y")
-            await message.answer(f"Сегодня ({today_str}) по командам оплат пока нет.")
-            return
+    if not data:
+        await message.answer("Сегодня оплат нет")
+        return
 
-        teams = {}
+    teams = {}
+    for _, project, amount in data:
+        teams[project] = teams.get(project, 0) + amount
 
-        for item in sales:
-            teams[item["project"]] = teams.get(item["project"], 0) + item["amount"]
+    sorted_teams = sorted(teams.items(), key=lambda x: x[1], reverse=True)
 
-        sorted_teams = sorted(teams.items(), key=lambda x: x[1], reverse=True)
+    text = "Сегодня по командам:\n\n"
+    total = 0
 
-        today_str = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d.%m.%Y")
-        total_amount = sum(amount for _, amount in sorted_teams)
+    for i, (team, amount) in enumerate(sorted_teams, 1):
+        text += f"{i}. {team} — {format_amount(amount)}\n"
+        total += amount
 
-        text = f"Сегодня по командам ({today_str}):\n\n"
+    text += f"\nИтого: {format_amount(total)}"
 
-        for i, (project, amount) in enumerate(sorted_teams, start=1):
-            text += f"{i}. {project} — {format_amount(amount)}\n"
-
-        text += f"\nИтого за сегодня: {format_amount(total_amount)}"
-
-        await message.answer(text)
-
-    except Exception as e:
-        await message.answer(f"Ошибка в /todayteam: {str(e)}")
+    await message.answer(text)
 
 
 # =========================
-# ЗАПУСК
+# RUN
 # =========================
 async def main():
     await dp.start_polling(bot)
