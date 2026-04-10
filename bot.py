@@ -89,6 +89,54 @@ def format_amount(n):
 
 def parse_amount(x):
     try:
+        s = str(x).strip()
+
+        if not s:
+            return 0
+
+        # убираем валюту и невидимые пробелы
+        s = s.replace("₸", "").replace("\xa0", "").replace(" ", "").strip()
+
+        # если есть и точка, и запятая
+        # считаем, что последний символ-разделитель — это десятичная часть
+        # а все до него — целая часть
+        if "," in s and "." in s:
+            last_comma = s.rfind(",")
+            last_dot = s.rfind(".")
+            decimal_pos = max(last_comma, last_dot)
+            s = s[:decimal_pos]
+
+        # если есть только запятая
+        elif "," in s:
+            parts = s.split(",")
+            # если после запятой 1-2 цифры, это копейки -> отрезаем
+            if len(parts[-1]) <= 2:
+                s = ",".join(parts[:-1]) or parts[0]
+            s = s.replace(",", "")
+
+        # если есть только точка
+        elif "." in s:
+            parts = s.split(".")
+            # если после точки 1-2 цифры, это копейки -> отрезаем
+            if len(parts[-1]) <= 2:
+                s = ".".join(parts[:-1]) or parts[0]
+            s = s.replace(".", "")
+
+        # на всякий случай оставляем только цифры и минус
+        cleaned = []
+        for ch in s:
+            if ch.isdigit() or ch == "-":
+                cleaned.append(ch)
+
+        s = "".join(cleaned)
+
+        if s in ("", "-"):
+            return 0
+
+        return int(s)
+
+    except:
+        return 0
         return int(
             str(x)
             .replace(" ", "")
