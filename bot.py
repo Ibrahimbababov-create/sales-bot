@@ -33,6 +33,9 @@ CACHE_TTL = 60  # секунд
 SALES_BOT_SPREADSHEET_ID = "19psuYsJk6s6Si-9vh7LaAvHp5LdmpiQvHFJVHiCwmnc"
 SALES_BOT_SHEET_NAME = "Sales-Bot"
 
+# ВАЖНО: chat_id группы с минусом
+PLAN_ALERT_CHAT_ID = -1003065195919
+
 TODAY_SOURCES = [
     {
         "project": "Бухонин",
@@ -59,6 +62,8 @@ SKIP_KEYWORDS = [
     "август", "сент", "октя", "ноябр", "декабр", "база", "base"
 ]
 
+PLAN_ALERTS_FILE = "plan_alerts_state.json"
+
 # =========================
 # CACHE
 # =========================
@@ -79,6 +84,49 @@ def set_cache(key: str, data) -> None:
 
 def get_cache(key: str):
     return cache[key]["data"]
+
+
+# =========================
+# FILE HELPERS
+# =========================
+def load_json_file(path: str, default):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def save_json_file(path: str, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+plan_alerts_state = load_json_file(PLAN_ALERTS_FILE, {})
+
+
+def get_current_month_key() -> str:
+    return datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m")
+
+
+def was_plan_alert_sent(name: str, level: str) -> bool:
+    month_key = get_current_month_key()
+    return plan_alerts_state.get(month_key, {}).get(name, {}).get(level, False)
+
+
+def mark_plan_alert_sent(name: str, level: str):
+    month_key = get_current_month_key()
+
+    if month_key not in plan_alerts_state:
+        plan_alerts_state[month_key] = {}
+
+    if name not in plan_alerts_state[month_key]:
+        plan_alerts_state[month_key][name] = {}
+
+    plan_alerts_state[month_key][name][level] = True
+    save_json_file(PLAN_ALERTS_FILE, plan_alerts_state)
 
 
 # =========================
@@ -113,32 +161,26 @@ def parse_amount(x) -> int:
         if not s:
             return 0
 
-        # убираем валюту и пробелы
         s = s.replace("₸", "").replace("\xa0", "").replace(" ", "").strip()
 
-        # если есть и точка, и запятая
-        # последний разделитель считаем десятичной частью
         if "," in s and "." in s:
             last_comma = s.rfind(",")
             last_dot = s.rfind(".")
             decimal_pos = max(last_comma, last_dot)
             s = s[:decimal_pos]
 
-        # если есть только запятая
         elif "," in s:
             parts = s.split(",")
             if len(parts[-1]) <= 2:
                 s = ",".join(parts[:-1]) or parts[0]
             s = s.replace(",", "")
 
-        # если есть только точка
         elif "." in s:
             parts = s.split(".")
             if len(parts[-1]) <= 2:
                 s = ".".join(parts[:-1]) or parts[0]
             s = s.replace(".", "")
 
-        # оставляем только цифры и минус
         cleaned = []
         for ch in s:
             if ch.isdigit() or ch == "-":
@@ -153,6 +195,16 @@ def parse_amount(x) -> int:
 
     except Exception:
         return 0
+
+
+def parse_percent(x) -> float:
+    try:
+        s = str(x).strip().replace("%", "").replace(",", ".")
+        if not s:
+            return 0.0
+        return float(s)
+    except Exception:
+        return 0.0
 
 
 def parse_date(x):
@@ -229,9 +281,6 @@ def load_today_data():
 
             values = ws.get_all_values()
 
-            # 1 строка: итоги
-            # 2 строка: заголовки
-            # с 3 строки: данные
             if len(values) < 3:
                 continue
 
@@ -255,6 +304,88 @@ def load_today_data():
     return result
 
 
+def load_plan_percent_data():
+    """
+    A = имя менеджера
+    E = % выполнения плана
+    """
+    rows = sheet.get_all_values()[1:]
+    result = []
+
+    for row in rows:
+        if len(row) < 5:
+            continue
+
+        name = row[0].strip()
+        percent = parse_percent(row[4])
+
+        if not name:
+            continue
+
+        result.append((name, percent))
+
+    return result
+
+
+# =========================
+# PLAN ALERTS TEXT
+# =========================
+def build_80_text(name: str, percent: float) -> str:
+    return (
+        f"🔥 {name} выполнил план на {percent:.0f}%!\n"
+        f"Осталось совсем чуть-чуть до 100%."
+    )
+
+
+def build_100_text(name: str, percent: float) -> str:
+    return (
+        f"🏆 {name} выполнил план на {percent:.0f}%!\n"
+        f"План закрыт. Красавчик."
+    )
+
+
+# =========================
+# PLAN ALERTS LOGIC
+# =========================
+async def check_plan_alerts(send_messages: bool = True):
+    data = load_plan_percent_data()
+    alerts_sent = []
+
+    for name, percent in data:
+        # Сначала проверяем 100, потом 80 — это логичнее
+        if percent >= 100:
+            if not was_plan_alert_sent(name, "100"):
+                text = build_100_text(name, percent)
+
+                if send_messages:
+                    await bot.send_message(chat_id=PLAN_ALERT_CHAT_ID, text=text)
+
+                mark_plan_alert_sent(name, "100")
+                alerts_sent.append(f"{name} -> 100%")
+
+        elif percent >= 80:
+            if not was_plan_alert_sent(name, "80"):
+                text = build_80_text(name, percent)
+
+                if send_messages:
+                    await bot.send_message(chat_id=PLAN_ALERT_CHAT_ID, text=text)
+
+                mark_plan_alert_sent(name, "80")
+                alerts_sent.append(f"{name} -> 80%")
+
+    return alerts_sent
+
+
+async def plan_alerts_loop():
+    while True:
+        try:
+            await check_plan_alerts(send_messages=True)
+        except Exception as e:
+            print(f"[PLAN ALERTS ERROR] {e}")
+
+        await asyncio.sleep(3600)  # раз в час
+
+
 # =========================
 # COMMANDS
 # =========================
@@ -267,13 +398,26 @@ async def start(message: Message):
         "/topteam\n"
         "/today\n"
         "/todayteam\n"
-        "/chatid"
+        "/chatid\n"
+        "/checkplan"
     )
 
 
 @dp.message(Command("chatid"))
 async def chatid(message: Message):
     await message.answer(f"chat_id: {message.chat.id}")
+
+
+@dp.message(Command("checkplan"))
+async def checkplan(message: Message):
+    alerts = await check_plan_alerts(send_messages=True)
+
+    if not alerts:
+        await message.answer("Новых уведомлений по плану нет.")
+        return
+
+    text = "Отправлены уведомления:\n\n" + "\n".join(alerts)
+    await message.answer(text)
 
 
 @dp.message(Command("top5"))
@@ -383,6 +527,7 @@ async def todayteam(message: Message):
 # RUN
 # =========================
 async def main():
+    asyncio.create_task(plan_alerts_loop())
     await dp.start_polling(bot)
 
 
