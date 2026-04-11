@@ -266,8 +266,14 @@ async def start(message: Message):
         "/topall\n"
         "/topteam\n"
         "/today\n"
-        "/todayteam"
+        "/todayteam\n"
+        "/chatid"
     )
+
+
+@dp.message(Command("chatid"))
+async def chatid(message: Message):
+    await message.answer(f"chat_id: {message.chat.id}")
 
 
 @dp.message(Command("top5"))
