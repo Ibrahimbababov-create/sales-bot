@@ -352,7 +352,6 @@ async def check_plan_alerts(send_messages: bool = True):
     alerts_sent = []
 
     for name, percent in data:
-        # Сначала проверяем 100, потом 80 — это логичнее
         if percent >= 100:
             if not was_plan_alert_sent(name, "100"):
                 text = build_100_text(name, percent)
@@ -383,7 +382,7 @@ async def plan_alerts_loop():
         except Exception as e:
             print(f"[PLAN ALERTS ERROR] {e}")
 
-        await asyncio.sleep(3600)  # раз в час
+        await asyncio.sleep(3600)
 
 
 # =========================
@@ -399,7 +398,8 @@ async def start(message: Message):
         "/today\n"
         "/todayteam\n"
         "/chatid\n"
-        "/checkplan"
+        "/checkplan\n"
+        "/debug"
     )
 
 
@@ -418,6 +418,17 @@ async def checkplan(message: Message):
 
     text = "Отправлены уведомления:\n\n" + "\n".join(alerts)
     await message.answer(text)
+
+
+# ======= СЮДА ДОБАВЛЕНА КОМАНДА DEBUG =======
+@dp.message(Command("debug"))
+async def debug(message: Message):
+    raw = sheet.get_all_values()
+    text = "Сырые данные из Sales-Bot:\n\n"
+    for i, row in enumerate(raw, 1):
+        text += f"{i}. {row[:5]}\n"
+    await message.answer(text[:4000])
+# ============================================
 
 
 @dp.message(Command("top5"))
