@@ -38,10 +38,10 @@ PLAN_ALERT_CHAT_ID = -1003065195919
 
 TODAY_SOURCES = [
     {
-        "project": "Бухонин",
+        "project": "Айша",
         "spreadsheet_id": "1vR5lHuASxlscEGscv6ka4QBRz73OE6Zbf5kvbgGCQPQ",
         "date_col_index": 1,   # B = дата
-        "amount_col_index": 6, # G = сумма продажи
+        "amount_col_index": 8, # I = сумма продажи
     },
     {
         "project": "Шолпан",
@@ -305,10 +305,6 @@ def load_today_data():
 
 
 def load_plan_percent_data():
-    """
-    A = имя менеджера
-    E = % выполнения плана
-    """
     rows = sheet.get_all_values()[1:]
     result = []
 
@@ -352,7 +348,6 @@ async def check_plan_alerts(send_messages: bool = True):
     alerts_sent = []
 
     for name, percent in data:
-        # Сначала проверяем 100, потом 80 — это логичнее
         if percent >= 100:
             if not was_plan_alert_sent(name, "100"):
                 text = build_100_text(name, percent)
@@ -383,7 +378,7 @@ async def plan_alerts_loop():
         except Exception as e:
             print(f"[PLAN ALERTS ERROR] {e}")
 
-        await asyncio.sleep(3600)  # раз в час
+        await asyncio.sleep(3600)
 
 
 # =========================
