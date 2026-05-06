@@ -39,19 +39,19 @@ PLAN_ALERT_CHAT_ID = -1003065195919
 TODAY_SOURCES = [
     {
         "project": "Айша",
-        "spreadsheet_id": "1vR5lHuASxlscEGscv6ka4QBRz73OE6Zbf5kvbgGCQPQ",
+        "spreadsheet_id": "1r8N_4y4MJ0YzzeYijjaaAOiYcKN8DXVl8EDq9YwxSzl",
         "date_col_index": 1,   # B = дата
         "amount_col_index": 8, # I = сумма продажи
     },
     {
         "project": "Шолпан",
-        "spreadsheet_id": "1FArSB2jUMY67MlTk7Z2-38Qr8BqGr5jdWjTo1CL73LM",
+        "spreadsheet_id": "1K9yM4bKiYUDaruNeOhme0MbarQ5jmoCygBYWUaKQAX4",
         "date_col_index": 1,   # B = дата
         "amount_col_index": 9, # J = сумма продажи
     },
     {
         "project": "Кайсар",
-        "spreadsheet_id": "1YP7Xl6Sju7rAUVbqtQaryqpKbawr5_qJSEvbQTWoK84",
+        "spreadsheet_id": "1G0CxswFycE4OVoT9Kd566FQYJRkpbg8vH5si12RP5Qs",
         "date_col_index": 1,   # B = дата
         "amount_col_index": 9, # J = сумма продажи
     },
