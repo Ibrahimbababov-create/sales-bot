@@ -39,7 +39,7 @@ PLAN_ALERT_CHAT_ID = -1003065195919
 TODAY_SOURCES = [
     {
         "project": "Айша",
-        "spreadsheet_id": "1r8N_4y4MJ0YzzeYijjaaAOiYcKN8DXVl8EDq9YwxSzl",
+        "spreadsheet_id": "1r8N_4y4MJ0YzzeYijjaaAOiYcKN8DXVl8EDq9YwxSzI",
         "date_col_index": 1,   # B = дата
         "amount_col_index": 8, # I = сумма продажи
     },
