@@ -4,19 +4,24 @@ import asyncio
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from contextlib import asynccontextmanager
+from typing import Optional
 
 import gspread
 from google.oauth2.service_account import Credentials
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, Update
+
+from fastapi import FastAPI, Request, Header, HTTPException
 
 # =========================
 # ENV
 # =========================
 TOKEN = os.getenv("BOT_TOKEN")
 GOOGLE_CREDENTIALS_RAW = os.getenv("GOOGLE_CREDENTIALS_JSON")
+PROCESS_SECRET = os.getenv("PROCESS_SECRET")  # секретный ключ для защиты /process
 
 if not TOKEN:
     raise ValueError("Не найден BOT_TOKEN в переменных окружения")
@@ -519,12 +524,33 @@ async def todayteam(message: Message):
 
 
 # =========================
-# RUN
+# FASTAPI APP (вместо polling)
 # =========================
-async def main():
-    asyncio.create_task(plan_alerts_loop())
-    await dp.start_polling(bot)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(plan_alerts_loop())
+    yield
+    task.cancel()
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post("/process")
+async def process_update(
+    request: Request,
+    x_internal_secret: Optional[str] = Header(default=None),
+):
+    if PROCESS_SECRET and x_internal_secret != PROCESS_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    data = await request.json()
+    update = Update.model_validate(data)
+    await dp.feed_update(bot=bot, update=update)
+
+    return {"ok": True}
