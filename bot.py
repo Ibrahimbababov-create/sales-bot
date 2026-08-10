@@ -35,37 +35,26 @@ if not GOOGLE_CREDENTIALS_RAW:
 TIMEZONE = "Asia/Almaty"
 CACHE_TTL = 60  # секунд
 
-SALES_BOT_SPREADSHEET_ID = "19psuYsJk6s6Si-9vh7LaAvHp5LdmpiQvHFJVHiCwmnc"
-SALES_BOT_SHEET_NAME = "Sales-Bot"
+# Таблица "Pacto Расходы и доходы"
+SALES_BOT_SPREADSHEET_ID = "1d4PSPskoQhODRJUgeG0roCQ2_FzqbbGKRQUBLmz-RiU"
 
 # ВАЖНО: chat_id группы с минусом
 PLAN_ALERT_CHAT_ID = -1003065195919
 
-TODAY_SOURCES = [
-    {
-        "project": "Айша",
-        "spreadsheet_id": "1-36YgeZzqljEYrfYRwy7v7Od03QapYhBU-psT6Vxh8g",
-        "date_col_index": 1,   # B = дата
-        "amount_col_index": 8, # I = сумма продажи
-    },
-    {
-        "project": "Шолпан",
-        "spreadsheet_id": "1wuDcZ1wXnjBI_B7rFWpSlcNGBl3AZPZMMZ3djrRr8bM",
-        "date_col_index": 1,   # B = дата
-        "amount_col_index": 9, # J = сумма продажи
-    },
-    {
-        "project": "Кайсар",
-        "spreadsheet_id": "1a28cqvxB8wLmtEmiFbky__3EV9EQdyOSVNHNnE26qAk",
-        "date_col_index": 1,   # B = дата
-        "amount_col_index": 9, # J = сумма продажи
-    },
-]
+# Структура листа месяца (одинакова для всех месяцев, см. "Шаблон месяца")
+PROJECT_HEADER_ROWS = [11, 28, 45, 62, 79, 96, 113, 130, 147]  # строка с названием проекта
+MANAGERS_PER_BLOCK = 10       # header+2 .. header+11 — строки менеджеров
+ITOGO_OFFSET = 12             # header+12 — строка ИТОГО (сумма по проекту)
 
-SKIP_KEYWORDS = [
-    "январ", "феврал", "март", "апрел", "май", "июн", "июл",
-    "август", "сент", "октя", "ноябр", "декабр", "база", "base"
-]
+COL_NAME = 0    # A — Менеджер
+COL_FACT = 3    # D — Факт тотал
+COL_PLAN_PCT = 5  # F — % плана
+
+RU_MONTHS = {
+    1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+    5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+    9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь",
+}
 
 PLAN_ALERTS_FILE = "plan_alerts_state.json"
 
@@ -73,8 +62,7 @@ PLAN_ALERTS_FILE = "plan_alerts_state.json"
 # CACHE
 # =========================
 cache = {
-    "top": {"time": 0, "data": None},
-    "today": {"time": 0, "data": None},
+    "month": {"time": 0, "data": None},
 }
 
 
@@ -116,6 +104,11 @@ def get_current_month_key() -> str:
     return datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m")
 
 
+def get_current_month_sheet_title() -> str:
+    now = datetime.now(ZoneInfo(TIMEZONE))
+    return f"{RU_MONTHS[now.month]} {now.year}"
+
+
 def was_plan_alert_sent(name: str, level: str) -> bool:
     month_key = get_current_month_key()
     return plan_alerts_state.get(month_key, {}).get(name, {}).get(level, False)
@@ -144,7 +137,7 @@ creds = Credentials.from_service_account_info(
 )
 client = gspread.authorize(creds)
 
-sheet = client.open_by_key(SALES_BOT_SPREADSHEET_ID).worksheet(SALES_BOT_SHEET_NAME)
+spreadsheet = client.open_by_key(SALES_BOT_SPREADSHEET_ID)
 
 # =========================
 # BOT
@@ -212,120 +205,79 @@ def parse_percent(x) -> float:
         return 0.0
 
 
-def parse_date(x):
-    text = str(x).strip()
-    if not text:
+def safe_get(values, row_idx: int, col_idx: int) -> str:
+    if row_idx < 0 or row_idx >= len(values):
+        return ""
+    row = values[row_idx]
+    if col_idx >= len(row):
+        return ""
+    return str(row[col_idx]).strip()
+
+
+# =========================
+# DATA LOADER (текущий месяц, автоматически)
+# =========================
+def get_current_month_worksheet():
+    title = get_current_month_sheet_title()
+    try:
+        return spreadsheet.worksheet(title)
+    except gspread.exceptions.WorksheetNotFound:
         return None
 
-    formats = [
-        "%d.%m.%Y",
-        "%d.%m.%y",
-        "%Y-%m-%d",
-        "%d/%m/%Y",
-        "%d/%m/%y",
-        "%d.%m.%Y %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-    ]
 
-    for fmt in formats:
-        try:
-            return datetime.strptime(text, fmt).date()
-        except Exception:
-            continue
+def load_month_data():
+    """
+    Возвращает {"managers": [...], "teams": [...]} за текущий месяц.
+    Каждый manager: {"name", "amount", "team", "percent"}
+    Каждый team: {"team", "total"}
+    Лист месяца определяется автоматически по текущей дате — руками менять не нужно.
+    """
+    if is_cache_valid("month"):
+        return get_cache("month")
 
-    return None
+    ws = get_current_month_worksheet()
+    if ws is None:
+        result = {"managers": [], "teams": []}
+        set_cache("month", result)
+        return result
 
+    values = ws.get_all_values()
 
-def skip_sheet(name: str) -> bool:
-    name = name.lower().strip()
-    return any(k in name for k in SKIP_KEYWORDS)
-
-
-# =========================
-# DATA LOADERS
-# =========================
-def load_top_data():
-    if is_cache_valid("top"):
-        return get_cache("top")
-
-    data = sheet.get_all_values()[1:]
     managers = []
+    teams = []
 
-    for row in data:
-        if len(row) < 4:
-            continue
+    for h in PROJECT_HEADER_ROWS:
+        team_name = safe_get(values, h - 1, COL_NAME)
 
-        name = row[0].strip()
-        team = row[1].strip()
-        amount = parse_amount(row[3])
+        for r in range(h + 2, h + 2 + MANAGERS_PER_BLOCK):
+            row_idx = r - 1
+            name = safe_get(values, row_idx, COL_NAME)
 
-        if not name:
-            continue
-
-        managers.append((name, amount, team))
-
-    managers.sort(key=lambda x: x[1], reverse=True)
-
-    set_cache("top", managers)
-    return managers
-
-
-def load_today_data():
-    if is_cache_valid("today"):
-        return get_cache("today")
-
-    today = datetime.now(ZoneInfo(TIMEZONE)).date()
-    result = []
-
-    for src in TODAY_SOURCES:
-        ss = client.open_by_key(src["spreadsheet_id"])
-
-        for ws in ss.worksheets():
-            if skip_sheet(ws.title):
+            if not name:
                 continue
 
-            values = ws.get_all_values()
+            amount = parse_amount(safe_get(values, row_idx, COL_FACT))
+            percent = parse_percent(safe_get(values, row_idx, COL_PLAN_PCT))
 
-            if len(values) < 3:
-                continue
+            managers.append({
+                "name": name,
+                "amount": amount,
+                "team": team_name,
+                "percent": percent,
+            })
 
-            rows = values[2:]
+        itogo_idx = h + ITOGO_OFFSET - 1
+        team_total = parse_amount(safe_get(values, itogo_idx, COL_FACT))
+        teams.append({"team": team_name, "total": team_total})
 
-            for row in rows:
-                if len(row) <= max(src["date_col_index"], src["amount_col_index"]):
-                    continue
-
-                sale_date = parse_date(row[src["date_col_index"]])
-                if sale_date != today:
-                    continue
-
-                amount = parse_amount(row[src["amount_col_index"]])
-                if amount <= 0:
-                    continue
-
-                result.append((ws.title.strip(), src["project"], amount))
-
-    set_cache("today", result)
+    result = {"managers": managers, "teams": teams}
+    set_cache("month", result)
     return result
 
 
 def load_plan_percent_data():
-    rows = sheet.get_all_values()[1:]
-    result = []
-
-    for row in rows:
-        if len(row) < 5:
-            continue
-
-        name = row[0].strip()
-        percent = parse_percent(row[4])
-
-        if not name:
-            continue
-
-        result.append((name, percent))
-
-    return result
+    data = load_month_data()
+    return [(m["name"], m["percent"]) for m in data["managers"]]
 
 
 # =========================
@@ -396,8 +348,6 @@ async def start(message: Message):
         "/top5\n"
         "/topall\n"
         "/topteam\n"
-        "/today\n"
-        "/todayteam\n"
         "/chatid\n"
         "/checkplan"
     )
@@ -422,103 +372,51 @@ async def checkplan(message: Message):
 
 @dp.message(Command("top5"))
 async def top5(message: Message):
-    data = load_top_data()
+    data = load_month_data()["managers"]
+    data = [m for m in data if m["amount"] > 0]  # прячем нулевых
+    data.sort(key=lambda m: m["amount"], reverse=True)
 
     if not data:
         await message.answer("Нет данных.")
         return
 
-    text = "Топ 5:\n\n"
-    for i, (name, amount, _) in enumerate(data[:5], 1):
-        text += f"{i}. {name} — {format_amount(amount)}\n"
+    text = f"Топ 5 ({get_current_month_sheet_title()}):\n\n"
+    for i, m in enumerate(data[:5], 1):
+        text += f"{i}. {m['name']} — {format_amount(m['amount'])}\n"
 
     await message.answer(text)
 
 
 @dp.message(Command("topall"))
 async def topall(message: Message):
-    data = load_top_data()
+    data = load_month_data()["managers"]
+    data = [m for m in data if m["amount"] > 0]  # прячем нулевых
+    data.sort(key=lambda m: m["amount"], reverse=True)
 
     if not data:
         await message.answer("Нет данных.")
         return
 
-    text = "Все:\n\n"
-    for i, (name, amount, _) in enumerate(data, 1):
-        text += f"{i}. {name} — {format_amount(amount)}\n"
+    text = f"Все ({get_current_month_sheet_title()}):\n\n"
+    for i, m in enumerate(data, 1):
+        text += f"{i}. {m['name']} — {format_amount(m['amount'])}\n"
 
     await message.answer(text)
 
 
 @dp.message(Command("topteam"))
 async def topteam(message: Message):
-    data = load_top_data()
+    teams = load_month_data()["teams"]
+    teams = [t for t in teams if t["total"] > 0]  # прячем нулевые проекты
+    teams.sort(key=lambda t: t["total"], reverse=True)
 
-    if not data:
+    if not teams:
         await message.answer("Нет данных.")
         return
 
-    teams = {}
-    for _, amount, team in data:
-        teams[team] = teams.get(team, 0) + amount
-
-    sorted_teams = sorted(teams.items(), key=lambda x: x[1], reverse=True)
-
-    text = "Команды:\n\n"
-    for i, (team, amount) in enumerate(sorted_teams, 1):
-        text += f"{i}. {team} — {format_amount(amount)}\n"
-
-    await message.answer(text)
-
-
-@dp.message(Command("today"))
-async def today(message: Message):
-    data = load_today_data()
-
-    if not data:
-        await message.answer("Сегодня оплат нет")
-        return
-
-    grouped = {}
-    for name, project, amount in data:
-        grouped[(name, project)] = grouped.get((name, project), 0) + amount
-
-    sorted_data = sorted(grouped.items(), key=lambda x: x[1], reverse=True)
-
-    text = "Сегодня:\n\n"
-    total = 0
-
-    for i, ((name, project), amount) in enumerate(sorted_data, 1):
-        text += f"{i}. {name} [{project}] — {format_amount(amount)}\n"
-        total += amount
-
-    text += f"\nИтого: {format_amount(total)}"
-
-    await message.answer(text)
-
-
-@dp.message(Command("todayteam"))
-async def todayteam(message: Message):
-    data = load_today_data()
-
-    if not data:
-        await message.answer("Сегодня оплат нет")
-        return
-
-    teams = {}
-    for _, project, amount in data:
-        teams[project] = teams.get(project, 0) + amount
-
-    sorted_teams = sorted(teams.items(), key=lambda x: x[1], reverse=True)
-
-    text = "Сегодня по командам:\n\n"
-    total = 0
-
-    for i, (team, amount) in enumerate(sorted_teams, 1):
-        text += f"{i}. {team} — {format_amount(amount)}\n"
-        total += amount
-
-    text += f"\nИтого: {format_amount(total)}"
+    text = f"Команды ({get_current_month_sheet_title()}):\n\n"
+    for i, t in enumerate(teams, 1):
+        text += f"{i}. {t['team']} — {format_amount(t['total'])}\n"
 
     await message.answer(text)
 
