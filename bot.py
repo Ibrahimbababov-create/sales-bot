@@ -12,7 +12,13 @@ from google.oauth2.service_account import Credentials
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import Message, Update
+from aiogram.types import (
+    Message,
+    Update,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    WebAppInfo,
+)
 
 from fastapi import FastAPI, Request, Header, HTTPException
 
@@ -57,6 +63,8 @@ RU_MONTHS = {
 }
 
 PLAN_ALERTS_FILE = "plan_alerts_state.json"
+
+PACTOCOINS_URL = "https://pactocoins.vercel.app"
 
 # =========================
 # CACHE
@@ -343,13 +351,31 @@ async def plan_alerts_loop():
 # =========================
 @dp.message(Command("start"))
 async def start(message: Message):
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📲 Открыть PactoCoins",
+                    web_app=WebAppInfo(url=PACTOCOINS_URL),
+                )
+            ]
+        ]
+    )
+
     await message.answer(
-        "Команды:\n"
+        "Привет! Это бот отдела продаж.\n\n"
+        "💰 <b>PactoCoins</b> — копи coins за выручку и бонусы, следи за "
+        "своим званием, трать в магазине наград или скидывайся в копилку "
+        "с командой. Полная инструкция — прямо в приложении, раздел "
+        "«Инструкция».\n\n"
+        "📊 Команды со статистикой продаж:\n"
         "/top5\n"
         "/topall\n"
         "/topteam\n"
         "/chatid\n"
-        "/checkplan"
+        "/checkplan",
+        reply_markup=keyboard,
+        parse_mode="HTML",
     )
 
 
