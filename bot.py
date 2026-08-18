@@ -499,13 +499,120 @@ async def catch_all(message: Message):
 
 
 # =========================
+# ЛИЧНЫЕ НАПОМИНАНИЯ (настраиваются в PactoCoins → Настройки)
+# =========================
+REMINDER_TEXT = (
+    "⏰ Напоминание: не забудь сегодня отправить заявку на выручку "
+    "или отметиться по бонусам, если ещё не успел."
+)
+
+
+def reminder_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📲 Открыть PactoCoins",
+                    web_app=WebAppInfo(url=PACTOCOINS_URL),
+                )
+            ]
+        ]
+    )
+
+
+async def fetch_due_reminder_users():
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return []
+
+    url = (
+        f"{SUPABASE_URL}/rest/v1/users"
+        "?select=id,telegram_id,reminder_time,reminder_last_sent_date"
+        "&reminder_enabled=eq.true"
+        "&telegram_id=not.is.null"
+    )
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    return []
+                return await resp.json()
+    except Exception as e:
+        print(f"[REMINDERS FETCH ERROR] {e}")
+        return []
+
+
+async def mark_reminder_sent(user_id: str, date_str: str):
+    url = f"{SUPABASE_URL}/rest/v1/users?id=eq.{user_id}"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            await session.patch(
+                url,
+                headers=headers,
+                json={"reminder_last_sent_date": date_str},
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+    except Exception as e:
+        print(f"[REMINDERS MARK ERROR] {e}")
+
+
+async def check_reminders():
+    now = datetime.now(ZoneInfo(TIMEZONE))
+    today_str = now.strftime("%Y-%m-%d")
+    now_hm = now.strftime("%H:%M")
+
+    for u in await fetch_due_reminder_users():
+        reminder_time = (u.get("reminder_time") or "")[:5]  # "HH:MM:SS" -> "HH:MM"
+        if reminder_time != now_hm:
+            continue
+        if u.get("reminder_last_sent_date") == today_str:
+            continue
+
+        try:
+            await bot.send_message(
+                chat_id=u["telegram_id"],
+                text=REMINDER_TEXT,
+                reply_markup=reminder_keyboard(),
+            )
+        except Exception as e:
+            print(f"[REMINDER SEND ERROR] user {u.get('id')}: {e}")
+
+        await mark_reminder_sent(u["id"], today_str)
+
+
+async def reminders_loop():
+    while True:
+        try:
+            await check_reminders()
+        except Exception as e:
+            print(f"[REMINDERS LOOP ERROR] {e}")
+
+        await asyncio.sleep(60)
+
+
+# =========================
 # FASTAPI APP (вместо polling)
 # =========================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(plan_alerts_loop())
+    reminders_task = asyncio.create_task(reminders_loop())
     yield
     task.cancel()
+    reminders_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
