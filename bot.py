@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import aiohttp
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -28,6 +29,8 @@ from fastapi import FastAPI, Request, Header, HTTPException
 TOKEN = os.getenv("BOT_TOKEN")
 GOOGLE_CREDENTIALS_RAW = os.getenv("GOOGLE_CREDENTIALS_JSON")
 PROCESS_SECRET = os.getenv("PROCESS_SECRET")  # секретный ключ для защиты /process
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 if not TOKEN:
     raise ValueError("Не найден BOT_TOKEN в переменных окружения")
@@ -445,6 +448,54 @@ async def topteam(message: Message):
         text += f"{i}. {t['team']} — {format_amount(t['total'])}\n"
 
     await message.answer(text)
+
+
+# =========================
+# INBOX (обычные сообщения боту, не команды)
+# =========================
+async def save_inbox_message(telegram_id: int, telegram_name: str, text: str):
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+
+    url = f"{SUPABASE_URL}/rest/v1/bot_inbox_messages"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "telegram_id": telegram_id,
+        "telegram_name": telegram_name,
+        "text": text,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            await session.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=5),
+            )
+    except Exception as e:
+        print(f"[INBOX SAVE ERROR] {e}")
+
+
+# Ловит всё, что не подошло ни под одну команду выше — должен быть
+# зарегистрирован последним, иначе перехватит команды тоже.
+@dp.message()
+async def catch_all(message: Message):
+    if not message.text:
+        return
+
+    name_parts = [message.from_user.first_name or ""]
+    if message.from_user.last_name:
+        name_parts.append(message.from_user.last_name)
+    name = " ".join(p for p in name_parts if p).strip()
+    if message.from_user.username:
+        name = f"{name} (@{message.from_user.username})".strip()
+
+    await save_inbox_message(message.from_user.id, name, message.text)
 
 
 # =========================
