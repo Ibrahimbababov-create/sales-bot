@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import time
+import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
@@ -522,6 +523,7 @@ def reminder_keyboard():
 
 async def fetch_due_reminder_users():
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        print("[REMINDERS FETCH] SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set")
         return []
 
     url = (
@@ -540,11 +542,13 @@ async def fetch_due_reminder_users():
             async with session.get(
                 url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
+                body = await resp.text()
                 if resp.status != 200:
+                    print(f"[REMINDERS FETCH ERROR] status={resp.status} body={body}")
                     return []
-                return await resp.json()
-    except Exception as e:
-        print(f"[REMINDERS FETCH ERROR] {e}")
+                return json.loads(body)
+    except Exception:
+        print(f"[REMINDERS FETCH ERROR]\n{traceback.format_exc()}")
         return []
 
 
@@ -574,31 +578,43 @@ async def check_reminders():
     today_str = now.strftime("%Y-%m-%d")
     now_hm = now.strftime("%H:%M")
 
-    for u in await fetch_due_reminder_users():
+    users = await fetch_due_reminder_users()
+    print(f"[REMINDERS CHECK] now={now_hm} candidates={len(users)}")
+
+    for u in users:
         reminder_time = (u.get("reminder_time") or "")[:5]  # "HH:MM:SS" -> "HH:MM"
+        print(
+            f"[REMINDERS CHECK] user={u.get('id')} reminder_time={reminder_time!r} "
+            f"now={now_hm!r} last_sent={u.get('reminder_last_sent_date')!r}"
+        )
+
         if reminder_time != now_hm:
             continue
         if u.get("reminder_last_sent_date") == today_str:
             continue
 
+        print(f"[REMINDERS MATCH] sending to telegram_id={u.get('telegram_id')}")
+
         try:
-            await bot.send_message(
+            result = await bot.send_message(
                 chat_id=u["telegram_id"],
                 text=REMINDER_TEXT,
                 reply_markup=reminder_keyboard(),
             )
-        except Exception as e:
-            print(f"[REMINDER SEND ERROR] user {u.get('id')}: {e}")
+            print(f"[REMINDERS SENT] user={u.get('id')} message_id={result.message_id}")
+        except Exception:
+            print(f"[REMINDER SEND ERROR] user {u.get('id')}:\n{traceback.format_exc()}")
 
         await mark_reminder_sent(u["id"], today_str)
 
 
 async def reminders_loop():
+    print("[REMINDERS LOOP] started")
     while True:
         try:
             await check_reminders()
-        except Exception as e:
-            print(f"[REMINDERS LOOP ERROR] {e}")
+        except Exception:
+            print(f"[REMINDERS LOOP ERROR]\n{traceback.format_exc()}")
 
         await asyncio.sleep(60)
 
