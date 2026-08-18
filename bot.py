@@ -20,6 +20,8 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     WebAppInfo,
+    MessageEntity,
+    User,
 )
 
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -449,6 +451,78 @@ async def topteam(message: Message):
         text += f"{i}. {t['team']} — {format_amount(t['total'])}\n"
 
     await message.answer(text)
+
+
+async def fetch_registered_users():
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return []
+
+    url = (
+        f"{SUPABASE_URL}/rest/v1/users"
+        "?select=id,name,telegram_id,role"
+        "&telegram_id=not.is.null"
+    )
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                body = await resp.text()
+                if resp.status != 200:
+                    print(f"[ALL FETCH ERROR] status={resp.status} body={body}")
+                    return []
+                return json.loads(body)
+    except Exception:
+        print(f"[ALL FETCH ERROR]\n{traceback.format_exc()}")
+        return []
+
+
+@dp.message(Command("all"))
+async def mention_all(message: Message):
+    if message.chat.type not in ("group", "supergroup"):
+        await message.answer("Команда работает только в группе.")
+        return
+
+    users = await fetch_registered_users()
+    sender = next(
+        (u for u in users if u.get("telegram_id") == message.from_user.id), None
+    )
+
+    if not sender or sender.get("role") != "admin":
+        await message.answer("Команда только для админа.")
+        return
+
+    targets = [u for u in users if u.get("telegram_id")]
+    if not targets:
+        await message.answer("Некого отмечать — никто ещё не заходил в приложение.")
+        return
+
+    text = "Все"
+    entities = [
+        MessageEntity(
+            type="text_mention",
+            offset=0,
+            length=len(text),
+            user=User(
+                id=u["telegram_id"],
+                is_bot=False,
+                first_name=(u.get("name") or "Сотрудник")[:64],
+            ),
+        )
+        for u in targets
+    ]
+
+    await bot.send_message(
+        chat_id=message.chat.id,
+        text=text,
+        entities=entities,
+        message_thread_id=message.message_thread_id,
+    )
 
 
 # =========================
