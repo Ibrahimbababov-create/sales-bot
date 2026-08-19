@@ -560,6 +560,8 @@ async def save_inbox_message(telegram_id: int, telegram_name: str, text: str):
 # зарегистрирован последним, иначе перехватит команды тоже.
 @dp.message()
 async def catch_all(message: Message):
+    if message.chat.type != "private":
+        return
     if not message.text:
         return
 
